@@ -1,0 +1,31 @@
+[package]
+name = "impulse_response"
+version = "0.1.0"
+edition = "2018"
+authors = ["David McDougall <dam1784@rit.edu>"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/ctrl-z-9000-times/impulse_response"
+categories = ["mathematics", "science", "simulation"]
+description = "Impulse Response Integration Method"
+
+[lib]
+name = "impulse_response"
+crate-type = ["lib", "cdylib"]
+
+[features]
+python = ["pyo3", "numpy"]
+default = []
+
+[dependencies]
+
+[dev-dependencies]
+rand = "0.7"
+
+[dependencies.pyo3]
+version = "0.10"
+features = ["extension-module"]
+optional = true
+
+[dependencies.numpy]
+version = "0.9"
+optional = true
