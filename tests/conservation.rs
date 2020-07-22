@@ -1,33 +1,29 @@
 /***
 Conservation in a closed system.
 
-Scenario: An element, such as heat or electric charge, diffuses throughout an
-isolated system. The element flows at a rate determined by its gradient.
-Eventually it will reach a steady state, and the element should be homogenously
-distributed throughout the system.
+Scenario: An element moves throughout an isolated system, an element such as
+heat or electric charge. The element is conserved, meaning that the element can
+not be spontaneously created or destroyed. Model such a system, and verify.
 
-An artifical system is generated:
+An artificial system is generated:
 + It is a random directed graph, and the only constraint on the connectivity
 between points is that all points have the same number of outgoing connections.
-+ Each point has a random capactity to contain the element, and each edge has a
-random resistance to movement through it. Points state with a random quantity of
++ The element flows at a rate determined by its gradient.
++ Each point has a random capacity to contain the element, and each edge has a
+random resistance to movement through it. Points start with a random quantity of
 the element.
 + Points are added and removed while the simulation is running.
 
-Run the simulation until it reaches a steady state. Verify that the quantity of
-the element is has not changed over the course of the simulation. Also, double
-check the numeric integration results against the Crank-Nicholson method of
-numeric integration.
+Run the simulation until it reaches a steady state. Verify that the simulation
+has not lost track of the total quantity of the element. Also, double check the
+numeric integration results against the Crank-Nicholson method of numeric
+integration. ***/
 
-***/
-// #![feature(test)]
-// extern crate test;
-use impulse_response::{SparseModel, SparseVector};
+use impulse_response::sparse::Vector as SparseVector;
 use rand::prelude::*;
-// use test::Bencher;
 
 // Scenario parameters.
-const NUM_POINTS: usize = 1_000;
+const NUM_POINTS: usize = 100;
 const NUM_EDGES: usize = 3;
 
 // Integration parameters.
@@ -88,7 +84,7 @@ impl Point {
 #[test]
 fn conservation() {
     let mut points = Vec::with_capacity(NUM_POINTS);
-    let mut m = SparseModel::new(DELTA_TIME, ACCURACY);
+    let mut m = impulse_response::sparse::Model::new(DELTA_TIME, ACCURACY);
     for i in 0..NUM_POINTS {
         points.push(Point::new());
         m.touch(i);
@@ -117,14 +113,14 @@ fn conservation() {
         m.advance(&state, &mut next_state, derivative);
         std::mem::swap(&mut state, &mut next_state);
         crank_nicholson = m.integrate(crank_nicholson, &mut derivative); // Private method.
-        let max_pct_diff = crank_nicholson
+        let crank_nicholson_error = crank_nicholson
             .data
             .iter()
             .zip(&state)
             .map(|(a, b)| 2.0 * f64::abs(a - b) / (a + b))
             .fold(-1.0 / 0.0, f64::max);
-        dbg!(max_pct_diff);
-        assert!(max_pct_diff <= ACCURACY);
+        dbg!(crank_nicholson_error);
+        assert!(crank_nicholson_error <= ACCURACY);
     }
     // Run the model until it stops changing.
     let mut steady_state = false;
@@ -153,12 +149,3 @@ fn conservation() {
     dbg!(initial_quantity, final_quantity__);
     assert!(abs_diff / initial_quantity <= ACCURACY);
 }
-
-/*
-#[bench]
-fn benchmark(b: &mut Bencher) {
-    b.iter(|| {
-        (0..1000).fold(0, |old, new| old ^ new);
-    });
-}
-*/

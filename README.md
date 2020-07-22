@@ -1,4 +1,4 @@
-/*! # Impulse Response Integration Method
+# Impulse Response Integration Method
 
 A tool for simulating dynamical systems.
 
@@ -99,40 +99,3 @@ The measurement error is approximately 8%.
 
 * `tests/leaky_cable.rs`
     + Simulates the electricity in a neurons dendrite.
-
-*/
-#![feature(trait_alias)]
-#![feature(const_generics)]
-#![feature(const_int_pow)]
-#![feature(is_sorted)]
-#![allow(incomplete_features)]
-// #[cfg(feature = "python")]
-// mod python;
-// mod dense;
-// mod histogram;
-// mod knn;
-// mod nn;
-pub mod sparse;
-
-enum IntegrationMethod {
-    #[allow(dead_code)]
-    ForwardEuler,
-
-    #[allow(dead_code)]
-    BackwardEuler {
-        iterations: usize,
-    },
-
-    CrankNicholson {
-        iterations: usize,
-    },
-}
-
-enum IntegrationTimestep {
-    #[allow(dead_code)]
-    Constant(f64),
-
-    Variable {
-        error_tolerance: f64,
-    },
-}
