@@ -218,6 +218,8 @@ impl Model {
 
 /** Container for a vector which tracks its non-zero elements. */
 #[derive(Debug)]
+// TODO: Consider for vec.data: using a Box<Slice> instead of a vector so that
+// the user can not accidentially resize it.
 pub struct Vector {
     /** Dense array of all elements in the vector, including any zeros.
 

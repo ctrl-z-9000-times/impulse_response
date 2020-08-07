@@ -71,7 +71,7 @@ impl Point {
     }
 }
 
-fn random_graph(num_points: usize) {
+fn run_program(num_points: usize) {
     let mut points = Vec::with_capacity(num_points);
     let mut m = impulse_response::sparse::Model::new(DELTA_TIME, ACCURACY);
     for i in 0..num_points {
@@ -105,14 +105,17 @@ fn random_graph(num_points: usize) {
 }
 
 fn main() {
-    // TODO: time each problem size independently instead of all at once.
-    let start = std::time::Instant::now();
-    for _ in 0..20 {
-        random_graph(100);
+    // TODO: Control the random seed!
+    for (points, trials) in [(100, 100), (1000, 10), (10000, 1)].iter().copied() {
+        let start = std::time::Instant::now();
+        for _ in 0..trials {
+            run_program(points);
+        }
+        println!(
+            "{} Points X {} Advances: {} seconds.",
+            points,
+            points * 2 * trials,
+            start.elapsed().as_secs_f64()
+        );
     }
-    for _ in 0..10 {
-        random_graph(1000);
-    }
-    random_graph(10000);
-    println!("Elapsed Time: {} seconds.", start.elapsed().as_secs_f64());
 }

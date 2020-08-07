@@ -33,9 +33,31 @@ relatively short `time_step` at which it measures the impulse response. As a
 result, the impulse responses are mostly zeros and the impulse response matrix
 can be compressed into a sparse matrix.
 
+If the users system has external inputs then extra steps are necessary to model
+their interactions. Inputs are not represented in the state vector and the
+impulse response function is not defined for inputs. Instead the impulse
+response matrix is measured as a function of the inputs, which are assumed to be
+constant over the time course of each integration time step. To efficiently
+compute the function `ImpulseResponseMatrix(Inputs)`: first evaluate this
+function at a great many input points; then construct an approximation from the
+exactly known points. An advantage of approximate solutions over closed form
+equations is that the approximation can handle non-linearities, which allows
+this method to work for linear systems where the coefficients are non-linear
+functions of the inputs.
+
 The impulse response integration method runs fast, but can consume a significant
 amount of time and memory at start up to compute and store the impulse
 responses.
+
+## Example: The Hodgkin Huxley Model
+
+The Hodgkin Huxley model describes the initiation and propagation of action
+potentials in neurons.
+
+![](https://raw.githubusercontent.com/ctrl-z-9000-times/impulse_response/master/figures/hh_single_ap.png)
+![](https://raw.githubusercontent.com/ctrl-z-9000-times/impulse_response/master/figures/hh_test_pattern.png)
+
+Citation: Ryan Siciliano, 2012, The Hodgkin-Huxley Model: Its Extensions, Analysis and Numerics.
 
 ## Example: Measuring equivalent resistance
 
@@ -69,7 +91,7 @@ The source code is an annotated example of how to use this library.
 Link: [impulse_response/examples/nerd_sniping.rs](https://github.com/ctrl-z-9000-times/impulse_response/blob/master/examples/nerd_sniping.rs)
 
 Result of running the code with a 32x32 grid:
-```
+```text
 $ time cargo run --example nerd_sniping --release
 Model Size: 1024 Nodes
 Equivalent Resistance: 0.8825786612296072 Ohms
@@ -78,7 +100,7 @@ Exact Answer: 4/PI - 1/2 = 0.7732395447351628 Ohms
 
 Now lets increase the size of the grid to 633x633, and observe that the
 equivalent resistance is closer to the correct value:
-```
+```text
 $ cargo run --example nerd_sniping --release
 Model Size: 400689 Nodes
 Equivalent Resistance: 0.8416329950362197 Ohms
@@ -95,7 +117,11 @@ The measurement error is approximately 8%.
 
 * `examples/benchmark.rs`
     + An artificial scenario.
-    + Demonstrates modifying the system while its running.
+    + Demonstrates modifying a sparse system while its running.
+
+* `tests/interpolation.rs`
+    + Demonstrates the interpolation algorithm, which is a weighted average of a
+    K-Nearest-Neighbors search using a KD-Tree.
 
 * `tests/leaky_cable.rs`
     + Simulates the electricity in a neurons dendrite.
@@ -105,13 +131,10 @@ The measurement error is approximately 8%.
 #![feature(const_generics)]
 #![feature(const_int_pow)]
 #![feature(is_sorted)]
+#![feature(slice_partition_at_index)]
 #![allow(incomplete_features)]
-// #[cfg(feature = "python")]
-// mod python;
-// mod dense;
-// mod histogram;
-// mod knn;
-// mod nn;
+pub mod dense;
+pub mod knn;
 pub mod sparse;
 
 enum IntegrationMethod {
