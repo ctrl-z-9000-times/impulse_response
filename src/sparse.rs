@@ -13,7 +13,7 @@ use rayon::prelude::*;
 pub struct Model {
     /// `ImpulseResponseMatrix[destination, source]`
     irm: SparseMatrix,
-    touched: Vec<usize>,
+    pub touched: Vec<usize>,
     time_step: f64,
     method: IntegrationMethod,
     timestep: IntegrationTimestep,
