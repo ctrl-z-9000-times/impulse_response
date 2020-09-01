@@ -134,8 +134,10 @@ The measurement error is approximately 8%.
 #![feature(slice_partition_at_index)]
 #![allow(incomplete_features)]
 pub mod dense;
-pub mod knn;
+pub mod kd_tree;
+pub mod knn_interp;
 pub mod sparse;
+pub mod voronoi;
 
 enum IntegrationMethod {
     #[allow(dead_code)]

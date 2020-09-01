@@ -1,5 +1,4 @@
-/***
-Conservation in a closed system.
+/*! Conservation in a closed system.
 
 Scenario: An element moves throughout an isolated system, an element such as
 heat or electric charge. The element is conserved, meaning that the element can
@@ -23,12 +22,11 @@ use impulse_response::sparse::Vector as SparseVector;
 use rand::prelude::*;
 
 // Scenario parameters.
-const NUM_POINTS: usize = 100;
+const NUM_POINTS: usize = if cfg!(debug_assertions) { 100 } else { 1000 };
 const NUM_EDGES: usize = 3;
 
 // Integration parameters.
 const ACCURACY: f64 = 1e-9;
-const CUTOFF: f64 = 1e-21;
 const DELTA_TIME: f64 = 1e-4;
 
 /// The system is a vector of points.
@@ -44,10 +42,10 @@ impl Point {
         let mut resistances = [0.0; NUM_EDGES];
         for e in 0..NUM_EDGES {
             adjacent[e] = random::<usize>() % NUM_POINTS;
-            resistances[e] = random::<f64>() * 1e9 + CUTOFF;
+            resistances[e] = random::<f64>() * 1e9 + ACCURACY;
         }
         Point {
-            capacity: random::<f64>() * 1e5 + CUTOFF,
+            capacity: random::<f64>() * 1e5 + ACCURACY,
             adjacent,
             resistances,
         }
@@ -68,10 +66,12 @@ impl Point {
                 if *dst_state != 0.0 {
                     deriv.data[*src_idx] -= flow;
                     deriv.data[*dst_idx] += flow;
-                } else if flow / points[*dst_idx].capacity * DELTA_TIME >= CUTOFF {
-                    deriv.data[*src_idx] -= flow;
-                    deriv.data[*dst_idx] += flow;
-                    deriv.nonzero.push(*dst_idx);
+                } else {
+                    if flow >= f64::EPSILON {
+                        deriv.data[*src_idx] -= flow;
+                        deriv.data[*dst_idx] += flow;
+                        deriv.nonzero.push(*dst_idx);
+                    }
                 }
             }
         }
@@ -84,7 +84,9 @@ impl Point {
 #[test]
 fn conservation() {
     let mut points = Vec::with_capacity(NUM_POINTS);
-    let mut m = impulse_response::sparse::Model::new(DELTA_TIME, ACCURACY);
+    // Do not apply any cutoff BC it alters the results, causing this to deviate
+    // from the basic numeric integration method results.
+    let mut m = impulse_response::sparse::Model::new(DELTA_TIME, ACCURACY, 0.0);
     for i in 0..NUM_POINTS {
         points.push(Point::new());
         m.touch(i);
@@ -118,7 +120,7 @@ fn conservation() {
             .iter()
             .zip(&state)
             .map(|(a, b)| 2.0 * f64::abs(a - b) / (a + b))
-            .fold(-1.0 / 0.0, f64::max);
+            .fold(-f64::INFINITY, f64::max);
         dbg!(crank_nicholson_error);
         assert!(crank_nicholson_error <= ACCURACY);
     }

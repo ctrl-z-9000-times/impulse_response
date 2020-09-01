@@ -4,7 +4,7 @@ In this context, sparse means that there are many states and most of them do not
 interact with each other.
 
 Sparse systems are not allowed to have external inputs. Instead the user should
-directly modified the state to account for any inputs. */
+directly modify the state to account for any inputs. */
 
 use crate::{IntegrationMethod, IntegrationTimestep};
 use rayon::prelude::*;
@@ -13,8 +13,9 @@ use rayon::prelude::*;
 pub struct Model {
     /// `ImpulseResponseMatrix[destination, source]`
     irm: SparseMatrix,
-    pub touched: Vec<usize>,
+    _touched: Vec<usize>,
     time_step: f64,
+    cutoff: f64,
     method: IntegrationMethod,
     timestep: IntegrationTimestep,
 }
@@ -28,11 +29,12 @@ impl Model {
     Note: errors may accumulate over multiple time steps. The error is computed
     as the maximum absolute difference between the approximate and true states
     */
-    pub fn new(time_step: f64, error_tolerance: f64) -> Model {
+    pub fn new(time_step: f64, error_tolerance: f64, cutoff: f64) -> Model {
         Model {
             irm: Default::default(),
-            touched: vec![],
+            _touched: vec![],
             time_step,
+            cutoff,
             method: IntegrationMethod::CrankNicholson { iterations: 1 },
             timestep: IntegrationTimestep::Variable { error_tolerance },
         }
@@ -41,10 +43,14 @@ impl Model {
     /** Number of points in the model. */
     pub fn len(&self) -> usize {
         let mut len = self.irm.len();
-        for point in &self.touched {
+        for point in self.touched() {
             len = len.max(*point + 1);
         }
         return len;
+    }
+
+    pub fn density(&self) -> f64 {
+        return self.irm.data.len() as f64 / self.irm.len().pow(2) as f64;
     }
 
     /** Add or Update a point.
@@ -54,7 +60,11 @@ impl Model {
 
     Points in the simulation are identified by an array index. */
     pub fn touch(&mut self, point: usize) {
-        self.touched.push(point)
+        self._touched.push(point)
+    }
+
+    pub fn touched(&self) -> &[usize] {
+        &self._touched
     }
 
     /** Run the model forward by `time_step`. */
@@ -72,13 +82,13 @@ impl Model {
     }
 
     fn update_irm(&mut self, derivative: impl Derivative) {
-        if self.touched.is_empty() {
+        if self.touched().is_empty() {
             return;
         }
         // Recompute all points which were touched, or can interact with a
         // touched point (`IRM[touched, point] != 0`).
-        let mut touching_touched = self.touched.clone();
-        for touched_point in &self.touched {
+        let mut touching_touched = self._touched.clone();
+        for touched_point in &self._touched {
             if *touched_point < self.irm.len() {
                 let row_start = self.irm.row_ranges[*touched_point];
                 let row_end = self.irm.row_ranges[*touched_point + 1];
@@ -89,7 +99,7 @@ impl Model {
         }
         touching_touched.par_sort_unstable();
         touching_touched.dedup();
-        self.touched.clear();
+        self._touched.clear();
         // Measure the impulse response at the touched points.
         let results: Vec<_> = touching_touched
             .par_iter()
@@ -98,6 +108,7 @@ impl Model {
                 state.data[*point] = 1.0;
                 state.nonzero.push(*point);
                 state = self.integrate(state, &derivative);
+                state = self.sparsify(state);
                 return state.to_coordinates();
             })
             .collect();
@@ -139,7 +150,7 @@ impl Model {
                     // TODO: Consider applying a jitter to subdivision boundaries.
                     for i in 0..subdivide {
                         let high_res_dt = dt / subdivide as f64;
-                        if high_res_dt == 0.0 {
+                        if !high_res_dt.is_normal() {
                             panic!("Failed to find time step which satisfies requested accuracy!")
                         }
                         high_res = self.integrate_timestep(high_res, derivative, high_res_dt);
@@ -213,6 +224,27 @@ impl Model {
         deriv.return_to_pool();
         state.clean();
         return state;
+    }
+
+    /// Apply the cutoff to the given sparse vector.
+    fn sparsify(&self, mut v: Vector) -> Vector {
+        let mut accumulator = 0.0;
+        for ii in (0..v.nonzero.len()).rev() {
+            let i = v.nonzero[ii];
+            let x = &mut v.data[i];
+            if *x < self.cutoff {
+                accumulator += std::mem::take(x);
+                v.nonzero.swap_remove(ii);
+            }
+        }
+        // Redistribute all of the truncated values, so that the sum total of
+        // the vector is preserved. Uniformly redistribute so as to incure the
+        // smallest possible deviation from the original data.
+        accumulator /= v.nonzero.len() as f64;
+        for i in &v.nonzero {
+            v.data[*i] += accumulator;
+        }
+        return v;
     }
 }
 

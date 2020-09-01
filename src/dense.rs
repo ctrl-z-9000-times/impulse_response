@@ -1,9 +1,10 @@
 /*! TODO: Docs */
 
+use crate::knn_interp::KnnInterpolator;
 use crate::{IntegrationMethod, IntegrationTimestep};
 use std::convert::TryInto;
 use std::fmt;
-use std::sync::{Arc, RwLock};
+use std::sync::{atomic, Arc, RwLock};
 
 /// Returns None if Elapsed Ticks == 0, No tables used.
 fn max_table_idx(elapsed_ticks: u32) -> Option<usize> {
@@ -18,8 +19,6 @@ const INTERP_SAMPLE_PERIOD: f64 = 1e4;
 const INTERP_MIN_SAMPLE_FRACTION: f64 = 1e-4;
 const SCHED_SAMPLE_PERIOD: f64 = 1e4;
 const SCHED_MIN_SAMPLE_FRACTION: f64 = 1e-4;
-/// Python: `1 / sum(exp(-x) for x in range(1, 100))`
-const MAGIC_INCREMENT: f64 = 1.7182818284590458;
 
 /** TODO: Docs */
 pub struct Model<
@@ -36,17 +35,9 @@ pub struct Model<
     pub max_input_error: [f64; INPUTS],
     pub max_output_error: [f64; OUTPUTS],
     pub max_state_error: [f64; STATES],
-    pub advance_data: RwLock<Vec<crate::knn::KDTree<INPUTS, IRM>>>,
-    pub interp_sample_fraction: RwLock<f64>,
-    pub sched_sample_fraction: RwLock<f64>,
-    pub scheduler: RwLock<Scheduler<INPUTS_STATES>>,
-}
-
-pub struct Scheduler<const INPUTS_STATES: usize> {
-    pub scheduler_data: crate::knn::KDTree<INPUTS_STATES, 1>,
-    pub time_step_too_long: bool,
-    pub undersleep_factor: hdrhistogram::Histogram<u64>,
-    pub oversleep_error: hdrhistogram::Histogram<u64>,
+    pub advance_data: RwLock<Vec<KnnInterpolator<INPUTS, IRM>>>,
+    pub scheduler: KnnInterpolator<INPUTS_STATES, 1>,
+    pub time_step_too_long: atomic::AtomicBool,
 }
 
 /** TODO: Docs */
@@ -128,21 +119,13 @@ impl<
                 inputs: self.previous_inputs,
                 elapsed_ticks: self.last_compute - 1,
             };
-            if rand::random::<f64>() < *self.model.interp_sample_fraction.read().unwrap() {
-                self.model.advance_exact_interpolation(&mut args_catchup);
-            } else {
-                self.model.advance(&mut args_catchup);
-            }
+            self.model.advance(&mut args_catchup);
             let mut args_event = AdvanceArguments {
                 state: args_catchup.state,
                 inputs: inputs,
                 elapsed_ticks: 1,
             };
-            if rand::random::<f64>() < *self.model.interp_sample_fraction.read().unwrap() {
-                self.model.advance_exact_interpolation(&mut args_event);
-            } else {
-                self.model.advance(&mut args_event);
-            }
+            self.model.advance(&mut args_event);
             self.state = args_event.state;
         } else {
             // Scheduled update.
@@ -151,19 +134,13 @@ impl<
                 inputs: self.previous_inputs,
                 elapsed_ticks: self.last_compute,
             };
-            if rand::random::<f64>() < *self.model.interp_sample_fraction.read().unwrap() {
-                self.model.advance_exact_interpolation(&mut args_update);
-            } else {
-                self.model.advance(&mut args_update);
-            }
+            self.model.advance(&mut args_update);
             self.state = args_update.state
         }
         self.last_compute = 0;
         self.previous_inputs = inputs;
         self.previous_outputs = (self.model.output_function)(&self.state);
-        let schedule_exact =
-            rand::random::<f64>() < *self.model.sched_sample_fraction.read().unwrap();
-        self.due_date = self.model.schedule(&inputs, &self.state, schedule_exact);
+        self.due_date = self.model.schedule(&inputs, &self.state);
         return self.previous_outputs;
     }
 }
@@ -242,14 +219,8 @@ impl<
             // TODO: Divide the max_state_error in half BC its used by two
             // mechanisms which both incur this much error?
             max_state_error: max_state_error.try_into().unwrap(),
-            interp_sample_fraction: RwLock::new(10.0),
-            sched_sample_fraction: RwLock::new(10.0),
-            scheduler: RwLock::new(Scheduler {
-                scheduler_data: Default::default(),
-                time_step_too_long: false,
-                undersleep_factor: hdrhistogram::Histogram::new(2).unwrap(),
-                oversleep_error: hdrhistogram::Histogram::new(2).unwrap(),
-            }),
+            scheduler: KnnInterpolator::new(SCHED_SAMPLE_PERIOD, SCHED_MIN_SAMPLE_FRACTION),
+            time_step_too_long: atomic::AtomicBool::new(false),
         });
     }
 
@@ -415,108 +386,54 @@ impl<
                 self.advance_data
                     .write()
                     .unwrap()
-                    .resize_with(table_idx + 1, Default::default);
+                    .resize_with(table_idx + 1, || {
+                        KnnInterpolator::new(INTERP_SAMPLE_PERIOD, INTERP_MIN_SAMPLE_FRACTION)
+                    });
             }
             // Get the nearest input examples for interpolation between IRMs.
-            let advance_data_borrow = self.advance_data.read().unwrap();
-            let irm = advance_data_borrow[table_idx].interpolate(&args.inputs);
-            if let Ok(irm) = irm {
-                // Apply the IRM and interpolate between their results.
-                args.state = self.apply_irm(&args.state, &irm);
-                if let Some(f) = &self.invariant_function {
-                    (f)(&mut args.state)
-                }
-            } else {
-                // Nearest neighbors failed. Compute the exact IRM for this point and use it.
-                let mut exact_irm = self.new_irm(&args.inputs);
-                for _ in 0..table_idx {
-                    self.square_irm(&mut exact_irm);
-                }
-                args.state = self.apply_irm(&args.state, &exact_irm);
-                // Add the irm to the nearest neighbors data.
-                std::mem::drop(advance_data_borrow);
-                self.advance_data.write().unwrap()[table_idx].add_point(&args.inputs, &exact_irm);
+            let irm = self.advance_data.read().unwrap()[table_idx].interpolate(
+                &args.inputs,
+                |_| {
+                    let mut exact_irm = self.new_irm(&args.inputs);
+                    for _ in 0..table_idx {
+                        self.square_irm(&mut exact_irm);
+                    }
+                    return exact_irm;
+                },
+                |a: &[f64; IRM], b: &[f64; IRM]| {
+                    let ticks = 2_u32.pow(table_idx as u32);
+                    if a.iter()
+                        .zip(b.iter())
+                        .map(|(exact, approx)| (exact - approx).abs())
+                        .zip(self.max_state_error.iter())
+                        .all(|(err, max)| err <= *max * ticks as f64 * self.time_step)
+                    {
+                        Ok(())
+                    } else {
+                        Err(())
+                    }
+                },
+            );
+            // Apply the IRM and interpolate between their results.
+            args.state = self.apply_irm(&args.state, &irm);
+            if let Some(f) = &self.invariant_function {
+                (f)(&mut args.state)
             }
         }
-    }
-
-    /// Advances and also ensures that the interpolation error is acceptable.
-    fn advance_exact_interpolation(
-        &self,
-        AdvanceArguments {
-            state,
-            inputs,
-            elapsed_ticks,
-        }: &mut AdvanceArguments<INPUTS, STATES>,
-    ) {
-        let max_table_idx = match max_table_idx(*elapsed_ticks) {
-            None => return,
-            Some(x) => x,
-        };
-        // Compute the exact results for this constant input & initial state.
-        let mut exact_irm = self.new_irm(inputs);
-        let mut next_state = state.clone();
-        for table_idx in 0..=max_table_idx {
-            let ticks = 2_u32.pow(table_idx as u32);
-            let exact_state = self.apply_irm(state, &exact_irm);
-            if *elapsed_ticks & (1 << table_idx) != 0 {
-                next_state = self.apply_irm(&next_state, &exact_irm);
-            }
-            // Use interpolation to compute the approximate results.
-            let mut interpolated_approximation = AdvanceArguments {
-                state: *state,
-                inputs: *inputs,
-                elapsed_ticks: ticks,
-            };
-            self.advance(&mut interpolated_approximation);
-            // Measure the error caused by interpolation.
-            let mut sample_fraction = self.interp_sample_fraction.write().unwrap();
-            *sample_fraction = INTERP_MIN_SAMPLE_FRACTION
-                .max(*sample_fraction * f64::exp(-1.0 / INTERP_SAMPLE_PERIOD));
-            if exact_state
-                .iter()
-                .zip(interpolated_approximation.state.iter())
-                .map(|(exact, approx)| (exact - approx).abs())
-                .zip(self.max_state_error.iter())
-                .any(|(err, max)| err > *max * ticks as f64 * self.time_step)
-            {
-                // Make this sample into an interpolation point.
-                self.advance_data.write().unwrap()[table_idx].add_point(inputs, &exact_irm);
-                *sample_fraction += MAGIC_INCREMENT;
-            }
-            //
-            self.square_irm(&mut exact_irm);
-        }
-        *state = next_state;
     }
 
     /// Runs a high accuracy simulation of an AdvanceArguments.
     ///
-    /// Return pair of (sleep, error)
-    ///
-    /// + Where sleep is the maximum number of ticks that the sample could
+    /// Returns sleep: the maximum number of ticks that the sample could
     /// have slept for before exceeding the output error tolerances.
-    ///
-    /// + Where error is the absolute value of the integral of the error: the
-    /// difference between the assumed constant output and the true output over
-    /// the specified length of time. The error is normalized into units of
-    /// max_output_error, and so the returned error is a multiple of
-    /// max_output_error. Each output has an error and the largest error is
-    /// returned. An error of less than 1 is an under sleep, and an error of
-    /// greater than 1 is an oversleep.
-    fn high_accuracy_advance(&self, sample: AdvanceArguments<INPUTS, STATES>) -> (u32, f64) {
-        let mut sample_error = None; // Return value.
-        let mut correct_sleep = None; // Return value.
+    fn high_accuracy_advance(&self, sample: AdvanceArguments<INPUTS, STATES>) -> u32 {
         let max_sleep = 2_u32.pow(21);
         let mut cursor = sample;
-        let sample_elapsed_ticks = cursor.elapsed_ticks;
-        debug_assert!(sample_elapsed_ticks <= max_sleep);
-        debug_assert!(sample_elapsed_ticks.is_power_of_two());
         let const_output = (self.output_function)(&cursor.state);
         let mut sleep = 0;
         let mut error_accumulator = [0_f64; OUTPUTS];
         let mut prev_output = const_output;
-        while sample_error == None || correct_sleep == None {
+        loop {
             // Advance in exponentially increasing time steps.
             cursor.elapsed_ticks = sleep / 16;
             // Round time step down to the nearest power of 2.
@@ -533,100 +450,54 @@ impl<
             }
             prev_output = true_output;
             // Check if the output error exceeds its tolerance.
-            if correct_sleep == None
-                && error_accumulator
-                    .iter()
-                    .zip(self.max_output_error.iter())
-                    .any(|(err, &max)| err.abs() > max)
+            if error_accumulator
+                .iter()
+                .zip(self.max_output_error.iter())
+                .any(|(err, &max)| err.abs() > max)
             {
-                correct_sleep = Some(sleep)
+                return sleep;
             }
             sleep += cursor.elapsed_ticks;
-            if correct_sleep == None && sleep >= max_sleep {
-                correct_sleep = Some(sleep)
-            }
-            // Measure the error at the given samples elapsed_ticks.
-            if sleep == sample_elapsed_ticks {
-                sample_error = Some(
-                    error_accumulator
-                        .iter()
-                        .zip(self.max_output_error.iter())
-                        .map(|(err, max)| err.abs() / max)
-                        .fold(-f64::INFINITY, |m, err| m.max(err)),
-                )
+            if sleep >= max_sleep {
+                return max_sleep;
             }
         }
-        (correct_sleep.unwrap(), sample_error.unwrap())
     }
 
     /// Returns the number of ticks until the next compute.
     ///
     /// Argument exact will run a higher accuracy simulation to determine the
     /// correct sleep time.
-    fn schedule(&self, inputs: &[f64; INPUTS], state: &[f64; STATES], mut exact: bool) -> u32 {
+    fn schedule(&self, inputs: &[f64; INPUTS], state: &[f64; STATES]) -> u32 {
         // Run the schedulers internal classifier.
         let mut clsr_input = Vec::with_capacity(STATES + INPUTS);
         clsr_input.extend_from_slice(inputs);
         clsr_input.extend_from_slice(state);
-        let borrow = self.scheduler.read().unwrap();
-        let scheduled_sleep_power = borrow
-            .scheduler_data
-            .interpolate(clsr_input.as_slice().try_into().unwrap());
-        let scheduled_sleep_power = match scheduled_sleep_power {
-            Ok(x) => x[0],
-            Err(_) => {
-                exact = true;
-                0.0
-            }
-        };
-        let scheduled_sleep = 2u32.pow(scheduled_sleep_power.floor() as u32);
-        if !exact {
-            return scheduled_sleep;
-        }
-        std::mem::drop(borrow);
-        // Determine the ground truth by simulating with a shorter time step.
-        let (mut correct_sleep_exact, error) = self.high_accuracy_advance(AdvanceArguments {
-            inputs: *inputs,
-            state: *state,
-            elapsed_ticks: scheduled_sleep,
-        });
-        if correct_sleep_exact < 1 {
-            self.scheduler.write().unwrap().time_step_too_long = true;
-            correct_sleep_exact = 1;
-        }
-        // Round down to the nearest power of 2.
-        let correct_sleep = 2u32.pow(32 - 1 - correct_sleep_exact.leading_zeros());
-        // Update the schedulers internals.
-        let mut scheduler = self.scheduler.write().unwrap();
-        scheduler
-            .oversleep_error
-            .record(error.ceil() as u64)
-            .unwrap();
-        scheduler
-            .undersleep_factor
-            .record((correct_sleep / scheduled_sleep) as u64)
-            .unwrap();
-        let mut sample_fraction = self.sched_sample_fraction.write().unwrap();
-        *sample_fraction =
-            SCHED_MIN_SAMPLE_FRACTION.max(*sample_fraction * f64::exp(-1.0 / SCHED_SAMPLE_PERIOD));
-        let scheduled_sleep_exact = 2.0_f64.powf(scheduled_sleep_power);
-        let correct_sleep_exact = correct_sleep_exact as f64;
-        if scheduled_sleep_exact > correct_sleep_exact
-            || scheduled_sleep_exact <= correct_sleep_exact / 2.0
-            || !exact
-        {
-            scheduler.scheduler_data.add_point(
-                clsr_input.as_slice().try_into().unwrap(),
-                &[correct_sleep_exact.log2()],
-            );
-        }
-        if scheduled_sleep_exact >= correct_sleep_exact * 2.0
-            || scheduled_sleep_exact <= correct_sleep_exact / 8.0
-            || !exact
-        {
-            *sample_fraction += MAGIC_INCREMENT;
-        }
-        return correct_sleep; // Return the more accurately computed results.
+        let scheduled_sleep_power = self.scheduler.interpolate(
+            clsr_input.as_slice().try_into().unwrap(),
+            |_| {
+                // Determine the ground truth by simulating with a shorter time step.
+                let mut correct_sleep_exact = self.high_accuracy_advance(AdvanceArguments {
+                    inputs: *inputs,
+                    state: *state,
+                    elapsed_ticks: 0,
+                });
+                if correct_sleep_exact < 1 {
+                    self.time_step_too_long
+                        .store(true, atomic::Ordering::Relaxed);
+                    correct_sleep_exact = 1;
+                }
+                return [(correct_sleep_exact as f64).log2()];
+            },
+            |approx, exact| {
+                if approx[0] > exact[0] / 8.0 && approx[0] < exact[0] * 2.0 {
+                    Ok(())
+                } else {
+                    Err(())
+                }
+            },
+        );
+        return 2u32.pow(scheduled_sleep_power[0].floor() as u32);
     }
 }
 
@@ -645,65 +516,13 @@ impl<
             INPUTS, OUTPUTS, STATES
         )?;
         write!(f, "  time_step: {}\n", self.time_step)?;
-        if self.scheduler.read().unwrap().time_step_too_long {
+        if self.time_step_too_long.load(atomic::Ordering::Relaxed) {
             write!(f, "  The time step is too long!\n",)?;
         }
         write!(f, "  max_input_error: {:?}\n", self.max_input_error)?;
         write!(f, "  max_output_error: {:?}\n", self.max_output_error)?;
         write!(f, "  max_state_error: {:?}\n", self.max_state_error)?;
-        write!(
-            f,
-            "Scheduler Error Rate: {} / {} samples.\n",
-            *self.sched_sample_fraction.read().unwrap() - SCHED_MIN_SAMPLE_FRACTION,
-            SCHED_SAMPLE_PERIOD,
-        )?;
-        write!(
-            f,
-            "Scheduler Interpolation Points: {}\n",
-            self.scheduler.read().unwrap().scheduler_data.len()
-        )?;
-        write!(
-            f,
-            "Scheduler Overslept: {:.6} % of samples ({:.6} % critical).\n",
-            100.0
-                - self
-                    .scheduler
-                    .read()
-                    .unwrap()
-                    .oversleep_error
-                    .percentile_below(1),
-            100.0
-                - self
-                    .scheduler
-                    .read()
-                    .unwrap()
-                    .oversleep_error
-                    .percentile_below(10)
-        )?;
-        write!(
-            f,
-            "Scheduler Underslept: {:.6} % of samples ({:.6} % critical).\n",
-            100.0
-                - self
-                    .scheduler
-                    .read()
-                    .unwrap()
-                    .undersleep_factor
-                    .percentile_below(1),
-            100.0
-                - self
-                    .scheduler
-                    .read()
-                    .unwrap()
-                    .undersleep_factor
-                    .percentile_below(10)
-        )?;
-        write!(
-            f,
-            "Interpolation Error Rate: {} / {} samples.\n",
-            *self.interp_sample_fraction.read().unwrap() - INTERP_MIN_SAMPLE_FRACTION,
-            INTERP_SAMPLE_PERIOD,
-        )?;
+        write!(f, "Scheduler {}\n", self.scheduler)?;
         for table_idx in 0..self.advance_data.read().unwrap().len() {
             write!(
                 f,

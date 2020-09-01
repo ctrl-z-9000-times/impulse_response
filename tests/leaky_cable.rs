@@ -1,5 +1,4 @@
-/***
-Model the cable equations for a neurons dendrite.
+/*! Model the cable equations for a neurons dendrite.
 
 Scenario: An electrical wire / cable of infinite length. The wire is resistive
 through its length. The wire is buried in the ground and is partially insulated
@@ -9,8 +8,7 @@ ground.
 Apply a voltage source to one point on the wire, and observe the resulting
 voltages elsewhere in the wire. In the steady state, the voltage in the wire
 should exponentially decay with respect to distance from the voltage source.
-Analytically solve for the steady state solution and compare.
-***/
+Analytically solve for the steady state solution and compare. ***/
 
 // Cable Parameters.
 const AXIAL_RESISTANCE: f64 = 1e4; // Units: Ohms / Meter
@@ -21,7 +19,6 @@ const LEAK_RESISTANCE: f64 = 1e6; // Units: Ohm * Meter
 const CABLE_LENGTH: f64 = 500.0; // Units: Meter
 const NUM_POINTS: usize = 600;
 const DELTA_TIME: f64 = 1e-3;
-const CUTOFF: f64 = 1e-9;
 const ACCURACY: f64 = 1e-6;
 
 // Convert the units of length from meters to simulation-points.
@@ -34,7 +31,7 @@ const R_LEAK: f64 = LEAK_RESISTANCE / POINT_DISTANCE; // Units: Ohms
 fn leaky_cable() {
     // Setup the simulation.
     let mut point_locations = Vec::with_capacity(NUM_POINTS);
-    let mut m = impulse_response::sparse::Model::new(DELTA_TIME, ACCURACY);
+    let mut m = impulse_response::sparse::Model::new(DELTA_TIME, ACCURACY, f64::EPSILON);
     for idx in 0..NUM_POINTS {
         let fraction = idx as f64 / (NUM_POINTS - 1) as f64;
         point_locations.push((fraction - 0.5) * CABLE_LENGTH);
@@ -58,22 +55,10 @@ fn leaky_cable() {
                 }
                 for adj in adjacent {
                     let current = (voltage.data[*point] - voltage.data[adj]) / R_AXIAL;
-                    if voltage.data[adj] != 0.0 {
-                        total_current += current;
-                    } else {
-                        // If the current is insignificant and the adjacent node is
-                        // currently excluded from the model (by virtue of being
-                        // zero) then model the circuit as an open connection. This
-                        // conserves electrical charge. The error induced by this
-                        // optimization (excluding insignificant voltages from the
-                        // model) self-corrects by accumulating charge in the
-                        // adjacent nodes until it overcomes the voltage cutoff
-                        // threshold.
-                        if current / C * DELTA_TIME >= CUTOFF {
-                            total_current += current;
-                            derivative.data[adj] = current / C;
-                            derivative.nonzero.push(adj);
-                        }
+                    total_current += current;
+                    if voltage.data[adj] == 0.0 {
+                        derivative.data[adj] = current / C;
+                        derivative.nonzero.push(adj);
                     }
                 }
                 derivative.data[*point] = -total_current / C;

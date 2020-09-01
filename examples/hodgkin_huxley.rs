@@ -197,10 +197,8 @@ fn main() {
             state.advance(0.0);
         }
         // Train for random waveforms.
-        while *nav_class.interp_sample_fraction.read().unwrap() >= 1.0
-            || *kv_class.interp_sample_fraction.read().unwrap() >= 1.0
-            || *nav_class.sched_sample_fraction.read().unwrap() >= 1.0
-            || *kv_class.sched_sample_fraction.read().unwrap() >= 1.0
+        while nav_class.scheduler.sample_fraction() >= 1.0
+            || kv_class.scheduler.sample_fraction() >= 1.0
         {
             let mut state = State::new(nav_class.clone(), kv_class.clone());
             let inputs: Vec<_> = (0..(1 + (rand::random::<usize>() % 3)))
@@ -221,20 +219,6 @@ fn main() {
             eprintln!("input:\n{:?}", inputs);
             eprintln!("nav:\n{}", nav_class);
             eprintln!("kv:\n{}", kv_class);
-            nav_class.scheduler.write().unwrap().oversleep_error.clear();
-            nav_class
-                .scheduler
-                .write()
-                .unwrap()
-                .undersleep_factor
-                .clear();
-            kv_class.scheduler.write().unwrap().oversleep_error.clear();
-            kv_class
-                .scheduler
-                .write()
-                .unwrap()
-                .undersleep_factor
-                .clear();
         }
     }
 
@@ -265,10 +249,8 @@ fn main() {
                     // Disable the automatic double checking of results,
                     // otherwise it always returns exact values (no
                     // interpolation, perfect scheduling).
-                    *nav_class.interp_sample_fraction.write().unwrap() = 0.0;
-                    *kv_class.interp_sample_fraction.write().unwrap() = 0.0;
-                    *nav_class.sched_sample_fraction.write().unwrap() = 0.0;
-                    *kv_class.sched_sample_fraction.write().unwrap() = 0.0;
+                    nav_class.scheduler.disable_double_check();
+                    kv_class.scheduler.disable_double_check();
                 }
                 state.advance(i_inject);
                 if state.nav.last_compute == 0 {
@@ -281,7 +263,10 @@ fn main() {
         performance += start.elapsed().as_nanos();
     }
     if num_computes > 0 {
-        eprintln!("Compute Load: {} %", num_computes as f64 / ticks as f64);
+        eprintln!(
+            "Compute Load: {:2.2} %",
+            100.0 * num_computes as f64 / ticks as f64
+        );
     }
     eprintln!("Performance: {} seconds.", performance as f64 / 1e9);
 }

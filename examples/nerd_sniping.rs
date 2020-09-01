@@ -71,7 +71,7 @@ fn derivative_function(
                 // optimization (excluding insignificant voltages from the
                 // model) self-corrects by accumulating charge in the adjacent
                 // nodes until it overcomes the voltage cutoff threshold.
-                if current * TIME_STEP / CAPACITANCE >= ACCURACY {
+                if current >= f64::EPSILON {
                     total_current += current;
                     derivative.data[*adj] = current / CAPACITANCE;
                     derivative.nonzero.push(*adj); // Don't forget to update the bookkeeping!
@@ -84,7 +84,7 @@ fn derivative_function(
 }
 
 fn main() {
-    let mut model = impulse_response::sparse::Model::new(TIME_STEP, ACCURACY);
+    let mut model = impulse_response::sparse::Model::new(TIME_STEP, ACCURACY, f64::EPSILON);
     // Notify the model when ever a node is initialized or its derivative function changes.
     for node in 0..SIZE * SIZE {
         model.touch(node)

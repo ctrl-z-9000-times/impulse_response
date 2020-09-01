@@ -36,6 +36,7 @@ fn sparse() {
     let mut m = impulse_response::sparse::Model::new(
         delta_time,
         accuracy / (simulation_duration / delta_time),
+        0.0,
     );
     for i in 0..num_points {
         m.touch(i);
@@ -83,7 +84,7 @@ fn dense_1() {
         };
     let simulation_duration = 20.0;
     // Setup the numeric integration.
-    let delta_time = 1e-3;
+    let delta_time = 1e-2;
     let accuracy = 1e-6;
     const SQR: usize = NUM_POINTS.pow(2);
     const INPUTS_STATES: usize = 1 + NUM_POINTS;
@@ -119,7 +120,7 @@ fn dense_1() {
 
 #[test]
 fn dense() {
-    for _ in 0..100 {
+    for _i in 0..100 {
         dense_1();
     }
 }
