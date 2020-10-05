@@ -1,11 +1,10 @@
 [package]
 name = "impulse_response"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2018"
 authors = ["David McDougall <dam1784@rit.edu>"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/ctrl-z-9000-times/impulse_response"
-readme = "README.md"
 categories = ["mathematics", "science", "simulation"]
 description = "Impulse Response Integration Method"
 

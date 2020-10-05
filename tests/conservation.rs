@@ -1,4 +1,4 @@
-/*! Conservation in a closed system.
+/*! # Conservation in a closed system.
 
 Scenario: An element moves throughout an isolated system, an element such as
 heat or electric charge. The element is conserved, meaning that the element can
@@ -18,7 +18,7 @@ has not lost track of the total quantity of the element. Also, double check the
 numeric integration results against the Crank-Nicholson method of numeric
 integration. ***/
 
-use impulse_response::sparse::Vector as SparseVector;
+use impulse_response::Vector as SparseVector;
 use rand::prelude::*;
 
 // Scenario parameters.
@@ -86,7 +86,7 @@ fn conservation() {
     let mut points = Vec::with_capacity(NUM_POINTS);
     // Do not apply any cutoff BC it alters the results, causing this to deviate
     // from the basic numeric integration method results.
-    let mut m = impulse_response::sparse::Model::new(DELTA_TIME, ACCURACY, 0.0);
+    let mut m = impulse_response::Model::new(DELTA_TIME, ACCURACY, 0.0);
     for i in 0..NUM_POINTS {
         points.push(Point::new());
         m.touch(i);

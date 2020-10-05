@@ -1,4 +1,4 @@
-/*! Model the cable equations for a neurons dendrite.
+/*! # Model the cable equations for a neurons dendrite.
 
 Scenario: An electrical wire / cable of infinite length. The wire is resistive
 through its length. The wire is buried in the ground and is partially insulated
@@ -31,7 +31,7 @@ const R_LEAK: f64 = LEAK_RESISTANCE / POINT_DISTANCE; // Units: Ohms
 fn leaky_cable() {
     // Setup the simulation.
     let mut point_locations = Vec::with_capacity(NUM_POINTS);
-    let mut m = impulse_response::sparse::Model::new(DELTA_TIME, ACCURACY, f64::EPSILON);
+    let mut m = impulse_response::Model::new(DELTA_TIME, ACCURACY, f64::EPSILON);
     for idx in 0..NUM_POINTS {
         let fraction = idx as f64 / (NUM_POINTS - 1) as f64;
         point_locations.push((fraction - 0.5) * CABLE_LENGTH);
@@ -42,8 +42,7 @@ fn leaky_cable() {
         *x -= center_point_location;
     }
     let derivative_function =
-        |voltage: &impulse_response::sparse::Vector,
-         derivative: &mut impulse_response::sparse::Vector| {
+        |voltage: &impulse_response::Vector, derivative: &mut impulse_response::Vector| {
             for point in &voltage.nonzero {
                 let mut total_current = voltage.data[*point] / R_LEAK;
                 let mut adjacent = Vec::with_capacity(2);

@@ -37,8 +37,8 @@ const ACCURACY: f64 = 1e-8; // Volts
 //
 // Derivative is always zeroed before it is given to this function.
 fn derivative_function(
-    voltage: &impulse_response::sparse::Vector,
-    derivative: &mut impulse_response::sparse::Vector,
+    voltage: &impulse_response::Vector,
+    derivative: &mut impulse_response::Vector,
 ) {
     let mut adjacent = Vec::with_capacity(4);
     for point in &voltage.nonzero {
@@ -84,7 +84,7 @@ fn derivative_function(
 }
 
 fn main() {
-    let mut model = impulse_response::sparse::Model::new(TIME_STEP, ACCURACY, f64::EPSILON);
+    let mut model = impulse_response::Model::new(TIME_STEP, ACCURACY, f64::EPSILON);
     // Notify the model when ever a node is initialized or its derivative function changes.
     for node in 0..SIZE * SIZE {
         model.touch(node)
