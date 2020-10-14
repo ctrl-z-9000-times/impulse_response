@@ -20,21 +20,19 @@ fn exponential_decay() {
         .map(|_| (random::<f64>() * 2.0 - 1.0) * 1000.0)
         .collect();
     let derivative_function =
-        |state: &impulse_response::Vector, derivative: &mut impulse_response::Vector| {
-            for idx in &state.nonzero {
-                derivative.data[*idx] = -state.data[*idx] / time_constant[*idx];
-                derivative.nonzero.push(*idx);
+        |state: &impulse_response::SparseVector,
+         derivative: &mut impulse_response::SparseVector| {
+            for (idx, value) in state.iter() {
+                derivative.insert(*idx, -value / time_constant[*idx]);
             }
         };
     let simulation_duration = 20.0;
     // Setup the numeric integration.
     let delta_time = 1e-3;
-    let accuracy = 1e-6;
-    let mut m = impulse_response::Model::new(
-        delta_time,
-        accuracy / (simulation_duration / delta_time),
-        0.0,
-    );
+    let min_dt = delta_time / 10_000.0;
+    let accuracy = 1e-3;
+    let mut m =
+        impulse_response::Model::new(delta_time, accuracy / simulation_duration, min_dt, 0.0);
     for i in 0..num_points {
         m.touch(i);
     }

@@ -19,7 +19,7 @@ const LEAK_RESISTANCE: f64 = 1e6; // Units: Ohm * Meter
 const CABLE_LENGTH: f64 = 500.0; // Units: Meter
 const NUM_POINTS: usize = 600;
 const DELTA_TIME: f64 = 1e-3;
-const ACCURACY: f64 = 1e-6;
+const ACCURACY: f64 = 1e-3;
 
 // Convert the units of length from meters to simulation-points.
 const POINT_DISTANCE: f64 = (CABLE_LENGTH) / (NUM_POINTS - 1) as f64; // Units: Meters
@@ -31,7 +31,8 @@ const R_LEAK: f64 = LEAK_RESISTANCE / POINT_DISTANCE; // Units: Ohms
 fn leaky_cable() {
     // Setup the simulation.
     let mut point_locations = Vec::with_capacity(NUM_POINTS);
-    let mut m = impulse_response::Model::new(DELTA_TIME, ACCURACY, f64::EPSILON);
+    let mut m =
+        impulse_response::Model::new(DELTA_TIME, ACCURACY, DELTA_TIME / 10_000.0, f64::EPSILON);
     for idx in 0..NUM_POINTS {
         let fraction = idx as f64 / (NUM_POINTS - 1) as f64;
         point_locations.push((fraction - 0.5) * CABLE_LENGTH);
@@ -42,9 +43,10 @@ fn leaky_cable() {
         *x -= center_point_location;
     }
     let derivative_function =
-        |voltage: &impulse_response::Vector, derivative: &mut impulse_response::Vector| {
-            for point in &voltage.nonzero {
-                let mut total_current = voltage.data[*point] / R_LEAK;
+        |voltage: &impulse_response::SparseVector,
+         derivative: &mut impulse_response::SparseVector| {
+            for (point, v) in voltage.iter() {
+                let mut total_current = v / R_LEAK;
                 let mut adjacent = Vec::with_capacity(2);
                 if *point > 0 {
                     adjacent.push(*point - 1)
@@ -53,15 +55,18 @@ fn leaky_cable() {
                     adjacent.push(*point + 1)
                 }
                 for adj in adjacent {
-                    let current = (voltage.data[*point] - voltage.data[adj]) / R_AXIAL;
-                    total_current += current;
-                    if voltage.data[adj] == 0.0 {
-                        derivative.data[adj] = current / C;
-                        derivative.nonzero.push(adj);
+                    match voltage.get(&adj) {
+                        Some(adj_v) => {
+                            total_current += (v - adj_v) / R_AXIAL;
+                        }
+                        None => {
+                            let current = v / R_AXIAL;
+                            total_current += current;
+                            derivative.insert(adj, current / C);
+                        }
                     }
                 }
-                derivative.data[*point] = -total_current / C;
-                derivative.nonzero.push(*point);
+                derivative.insert(*point, -total_current / C);
             }
         };
     // Analyze the steady state response to a voltage source.

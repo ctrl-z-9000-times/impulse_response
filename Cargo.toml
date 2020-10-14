@@ -1,6 +1,6 @@
 [package]
 name = "impulse_response"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2018"
 authors = ["David McDougall <dam1784@rit.edu>"]
 license = "MIT OR Apache-2.0"
@@ -15,6 +15,3 @@ crate-type = ["lib"]
 [dependencies]
 rand = "0"
 rayon = "1"
-
-[dev-dependencies]
-structopt = "0.3"

@@ -24,27 +24,25 @@ const CAPACITANCE: f64 = 1.0; // Farads
 // The simulation advances in increments of this time.
 const TIME_STEP: f64 = RESISTANCE * CAPACITANCE / 10.0; // Seconds
 
-// The target accuracy of the impulse response measurement. Also, voltages
-// smaller than this are rounded down to zero, which makes the impulse response
-// sparse.
+// The target accuracy of the impulse response measurement.
 const ACCURACY: f64 = 1e-8; // Volts
 
 // Define the derivative of the state.
-// The state of this system is the voltage at each node.
+// The state of the system is the voltage at each node.
 //
-// Both arguments are sparse vectors. Sparse vectors are a wrapper class around
-// the standard vector which also tracks the non-zero elements.
-//
-// Derivative is always zeroed before it is given to this function.
+
+// Both arguments are sparse vectors. Sparse vectors are hash maps containing
+// all of the non-zero values in the vector. Values which are not present are
+// implicitly zeros.
 fn derivative_function(
-    voltage: &impulse_response::Vector,
-    derivative: &mut impulse_response::Vector,
+    voltage: &impulse_response::SparseVector,
+    derivative: &mut impulse_response::SparseVector,
 ) {
     let mut adjacent = Vec::with_capacity(4);
-    for point in &voltage.nonzero {
+    for (&point_index, &point_voltage) in voltage.iter() {
         // Find all adjacent nodes.
         adjacent.clear();
-        let (x, y) = index_to_coords(*point);
+        let (x, y) = index_to_coords(point_index);
         if x > 0 {
             adjacent.push(coords_to_index(x - 1, y));
         }
@@ -60,31 +58,36 @@ fn derivative_function(
         // Measure the current into / out of this point.
         let mut total_current = 0.0;
         for adj in adjacent.iter() {
-            let current = (voltage.data[*point] - voltage.data[*adj]) / RESISTANCE;
-            if voltage.data[*adj] != 0.0 {
-                total_current += current;
-            } else {
-                // If the adjacent point is currently excluded from the model
-                // (by virtue of being zero) and the effect on the voltage is
-                // insignificant then model the connection as an open circuit.
-                // This conserves electrical charge. The error induced by this
-                // optimization (excluding insignificant voltages from the
-                // model) self-corrects by accumulating charge in the adjacent
-                // nodes until it overcomes the voltage cutoff threshold.
-                if current >= f64::EPSILON {
-                    total_current += current;
-                    derivative.data[*adj] = current / CAPACITANCE;
-                    derivative.nonzero.push(*adj); // Don't forget to update the bookkeeping!
+            match voltage.get(adj) {
+                Some(&adj_voltage) => {
+                    total_current += (point_voltage - adj_voltage) / RESISTANCE;
+                }
+                None => {
+                    let current = point_voltage / RESISTANCE;
+                    // If the adjacent point is currently excluded from the model
+                    // (by virtue of being zero) and the effect on the voltage is
+                    // insignificant then model the connection as an open circuit.
+                    // This conserves electrical charge. The error induced by this
+                    // optimization (excluding insignificant voltages from the
+                    // model) self-corrects by accumulating charge in the adjacent
+                    // nodes until it overcomes the voltage cutoff threshold.
+                    if current / CAPACITANCE * TIME_STEP >= f64::EPSILON {
+                        total_current += current;
+                        derivative.insert(
+                            *adj,
+                            current / CAPACITANCE + derivative.get(adj).unwrap_or(&0.0),
+                        );
+                    }
                 }
             }
         }
-        derivative.data[*point] = -total_current / CAPACITANCE;
-        derivative.nonzero.push(*point); // Don't forget to update the bookkeeping!
+        derivative.insert(point_index, -total_current / CAPACITANCE);
     }
 }
 
 fn main() {
-    let mut model = impulse_response::Model::new(TIME_STEP, ACCURACY, f64::EPSILON);
+    let mut model =
+        impulse_response::Model::new(TIME_STEP, ACCURACY, TIME_STEP / 10_000.0, f64::EPSILON);
     // Notify the model when ever a node is initialized or its derivative function changes.
     for node in 0..SIZE * SIZE {
         model.touch(node)
