@@ -100,6 +100,7 @@ fn conservation() {
     for i in 0..NUM_POINTS {
         // Replace a random point.
         let replace: usize = random::<usize>() % NUM_POINTS;
+        m.delete(replace);
         initial_quantity -= state[replace] * points[replace].capacity;
         points[replace] = Point::new();
         state[replace] = Point::random_state() * 1000.0;

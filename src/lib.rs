@@ -113,12 +113,15 @@ The measurement error is approximately 8%.
 #![allow(clippy::needless_return)]
 
 use rayon::prelude::*;
+use std::collections::{HashMap, HashSet};
 
 /** Main class */
+#[derive(Clone)]
 pub struct Model {
     /// `ImpulseResponseMatrix[destination, source]`
     irm: SparseMatrix,
-    _touched: Vec<usize>,
+    _touched: HashSet<usize>,
+    removed: HashSet<usize>,
     time_step: f64,
     cutoff: f64,
     error_tolerance: f64,
@@ -155,7 +158,8 @@ impl Model {
             error_tolerance,
             min_dt,
             cutoff,
-            _touched: vec![],
+            _touched: Default::default(),
+            removed: Default::default(),
             irm: Default::default(),
         }
     }
@@ -185,11 +189,18 @@ impl Model {
 
     Points in the simulation are identified by an index into an array. */
     pub fn touch(&mut self, point: usize) {
-        self._touched.push(point)
+        self._touched.insert(point);
+        self.removed.remove(&point);
     }
 
-    pub fn touched(&self) -> &[usize] {
-        &self._touched
+    pub fn touched(&self) -> impl Iterator<Item = &usize> {
+        self._touched.iter()
+    }
+
+    pub fn delete(&mut self, point: usize) {
+        debug_assert!(point < self.len());
+        self.removed.insert(point);
+        self._touched.remove(&point);
     }
 
     /** Run the model forward by one `time_step`. */
@@ -199,42 +210,51 @@ impl Model {
         next_state: &mut [f64],
         derivative: impl Derivative,
     ) {
-        if !self.touched().is_empty() {
+        if !self._touched.is_empty() || !self.removed.is_empty() {
             self.update_irm(derivative);
         }
         self.irm.x_vector(current_state, next_state);
     }
 
+    /// Deals with touched & removed points.
     fn update_irm(&mut self, derivative: impl Derivative) {
-        // Recompute all points which were touched, or can interact with a
-        // touched point (`IRM[touched, point] != 0`).
-        for t in 0..self._touched.len() {
-            let touched_point = unsafe { *self._touched.get_unchecked(t) };
-            if touched_point < self.irm.len() {
-                let row_start = self.irm.row_ranges[touched_point];
-                let row_end = self.irm.row_ranges[touched_point + 1];
-                self._touched
-                    .extend_from_slice(&self.irm.column_indices[row_start..row_end]);
+        let mut touched = std::mem::take(&mut self._touched);
+        let removed = std::mem::take(&mut self.removed);
+        // Recompute all points which can interact with a touched point
+        // (`IRM[touched, point] != 0`). Except of course for points which were
+        // removed, which takes precedence over this.
+        let mut touching_touched = vec![]; // TODO: Consider using heuristic to estimate the size of this list.
+        for &point in touched.iter().chain(&removed) {
+            if point < self.irm.len() {
+                let row_start = self.irm.row_ranges[point];
+                let row_end = self.irm.row_ranges[point + 1];
+                for tt in &self.irm.column_indices[row_start..row_end] {
+                    if removed.contains(tt) {
+                        continue;
+                    }
+                    touching_touched.push(*tt);
+                }
             } else {
-                self.irm.resize(touched_point + 1);
+                self.irm.resize(point + 1);
             }
         }
-        self._touched.par_sort_unstable();
-        self._touched.dedup();
+        for &tt in &touching_touched {
+            touched.insert(tt);
+        }
         // Measure the impulse response at the touched points.
-        let results: Vec<_> = self
-            ._touched
+        let mut results: HashMap<_, _> = touched
             .par_iter()
             .map(|&point| {
                 let mut state = SparseVector::new();
                 state.insert(point, 1.0);
                 state = self.integrate(state, &derivative);
-                let mut coordinates: Vec<_> = state.drain().collect();
+                let mut state: Vec<(usize, f64)> = state.drain().collect();
+                debug_assert!(state.iter().all(|(idx, _val)| *idx < self.len()));
                 // Apply the cutoff. All values below the cutoff are set to
                 // zero. The removed values are summed and uniformly
                 // redistributed to the remaining non-zero values.
                 let mut sum_removed_values = 0.0;
-                coordinates.retain(|(_, value)| {
+                state.retain(|(_, value)| {
                     if value.abs() < self.cutoff {
                         sum_removed_values += *value;
                         return false;
@@ -245,16 +265,19 @@ impl Model {
                 // total of the state is preserved. Uniformly redistribute so
                 // as to incur the smallest possible deviation from the
                 // original data.
-                sum_removed_values /= coordinates.len() as f64;
-                for (_, value) in &mut coordinates {
+                sum_removed_values /= state.len() as f64;
+                for (_, value) in &mut state {
                     *value += sum_removed_values;
                 }
-                return coordinates;
+                return (point, state);
             })
             .collect();
+        results.reserve(removed.len());
+        for &column in removed.iter() {
+            results.insert(column, Default::default());
+        }
         // Merge new data into existing IRM.
-        self.irm.write_columns(&self._touched, &results);
-        self._touched.clear();
+        self.irm.write_columns(&results);
     }
 
     /// Integrate over one time_step.
@@ -350,7 +373,7 @@ impl Model {
 }
 
 /// State or Derivative Vector, with implicit zeros.
-pub type SparseVector = std::collections::HashMap<usize, f64>;
+pub type SparseVector = HashMap<usize, f64>;
 
 /// Cleans up the nonzero list.
 ///
@@ -393,7 +416,7 @@ struct SparseCoordinate {
 }
 
 /// Compressed Sparse Row Matrix.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct SparseMatrix {
     pub data: Vec<f64>,
     pub row_ranges: Vec<usize>,
@@ -420,13 +443,9 @@ impl SparseMatrix {
         self.row_ranges.resize(new_size + 1, self.data.len());
     }
 
-    fn write_columns(&mut self, columns: &[usize], rows: &[Vec<(usize, f64)>]) {
-        let mut delete_columns = vec![false; self.len()];
-        for c in columns {
-            delete_columns[*c] = true;
-        }
-        let mut coords = Vec::with_capacity(rows.iter().map(|sv| sv.len()).sum());
-        for (c_idx, row) in columns.iter().zip(rows) {
+    fn write_columns(&mut self, csr_data: &HashMap<usize, Vec<(usize, f64)>>) {
+        let mut coords = Vec::with_capacity(csr_data.values().map(|srv| srv.len()).sum());
+        for (c_idx, row) in csr_data.iter() {
             for (r_idx, value) in row {
                 coords.push(SparseCoordinate {
                     row: *r_idx,
@@ -452,7 +471,7 @@ impl SparseMatrix {
             // being written to.
             for index in *row_start..*row_end {
                 let column = self.column_indices[index];
-                if !delete_columns[column] {
+                if !csr_data.contains_key(&column) {
                     result.data.push(self.data[index]);
                     result.column_indices.push(column);
                 }
@@ -473,8 +492,8 @@ impl SparseMatrix {
     /// Computes: `self * src => dst`.
     /// Arguments src & dst are dense column vectors.
     fn x_vector(&self, src: &[f64], dst: &mut [f64]) {
-        assert!(src.len() == self.len());
-        assert!(dst.len() == self.len());
+        assert_eq!(src.len(), self.len(), "src.len() != self.len()");
+        assert_eq!(dst.len(), self.len(), "dst.len() != self.len()");
         dst.par_iter_mut().enumerate().for_each(|(row, dst)| {
             let row_start = self.row_ranges[row];
             let row_end = self.row_ranges[row + 1];

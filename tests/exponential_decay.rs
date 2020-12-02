@@ -6,7 +6,6 @@ decays over time. Points are totally isolated from each other.
 Analytically solve for the exact value of each point at every moment in time,
 and check the accuracy of the numeric integration. ***/
 
-#![feature(const_int_pow)]
 use rand::prelude::*;
 
 #[test]
